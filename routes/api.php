@@ -12,7 +12,8 @@ use App\Http\Controllers\NotificationController;
 
 
 //Dashboard
-Route::get('/dashboard-data', [DashboardController::class, 'getDashboardData']);
+Route::get('/dashboard', [DashboardController::class, 'index']);
+
 
 //Login
 Route::post('/login', [AuthController::class, 'login']);
