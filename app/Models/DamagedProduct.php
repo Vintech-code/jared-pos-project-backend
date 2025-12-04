@@ -14,6 +14,7 @@ class DamagedProduct extends Model
         'product_name',
         'quantity',
         'reason',
+        'action_taken',
         'date',
         'unit_of_measurement',
         'refunded',

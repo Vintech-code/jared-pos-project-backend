@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\ProductController;
+use App\Http\Controllers\ProductVariantController;
 use App\Http\Controllers\DamagedProductController;
 use App\Http\Controllers\CustomerController;
 use App\Http\Controllers\NotificationController;
@@ -31,27 +32,40 @@ Route::post('/products/{id}/unhide', [ProductController::class, 'unhideProduct']
 Route::put('/products/{id}', [ProductController::class, 'update']);
 Route::apiResource('products', ProductController::class);
 
+Route::prefix('products/{product}/variants')->group(function () {
+    Route::post('/', [ProductVariantController::class, 'store']);
+    Route::put('/{variant}', [ProductVariantController::class, 'update']);
+    Route::delete('/{variant}', [ProductVariantController::class, 'destroy']);
+    Route::put('/{variant}/receive', [ProductVariantController::class, 'receive']);
+    Route::put('/{variant}/deduct', [ProductVariantController::class, 'deduct']);
+    Route::post('/{variant}/toggle-hidden', [ProductVariantController::class, 'toggleHidden']);
+    Route::post('/{variant}/default', [ProductVariantController::class, 'setDefault']);
+});
+
 
 //Damaged Products
 Route::get('/damaged-products', [DamagedProductController::class, 'index']);
 Route::post('/damaged-products', [DamagedProductController::class, 'store']);
+Route::get('/damaged-products/{id}', [DamagedProductController::class, 'show']);
+Route::put('/damaged-products/{id}', [DamagedProductController::class, 'update']);
+Route::delete('/damaged-products/{id}', [DamagedProductController::class, 'destroy']);
 Route::get('/damaged-products/stats', [DamagedProductController::class, 'stats']);
 Route::post('/damaged-products/{id}/refund', [DamagedProductController::class, 'refund']);
 Route::post('/inventory/deduct-from-damage', [DamagedProductController::class, 'deductFromInventory']);
 
 //Customers
 Route::prefix('customers')->group(function () {
-Route::get('/', [CustomerController::class, 'index']);
-Route::post('/', [CustomerController::class, 'store']);
-Route::put('/{id}', [CustomerController::class, 'update']);
-Route::get('/{id}', [CustomerController::class, 'show']);
+    Route::get('/', [CustomerController::class, 'index']);
+    Route::post('/', [CustomerController::class, 'store']);
+    Route::put('/{id}', [CustomerController::class, 'update']);
+    Route::get('/{id}', [CustomerController::class, 'show']);
 });
 
 Route::prefix('notifications')->group(function () {
-Route::get('/', [NotificationController::class, 'index']);
-Route::post('/', [NotificationController::class, 'store']);
-Route::patch('/{notification}/read', [NotificationController::class, 'markAsRead']);
-Route::patch('/mark-all-read', [NotificationController::class, 'markAllAsRead']); 
+    Route::get('/', [NotificationController::class, 'index']);
+    Route::post('/', [NotificationController::class, 'store']);
+    Route::patch('/{notification}/read', [NotificationController::class, 'markAsRead']);
+    Route::patch('/mark-all-read', [NotificationController::class, 'markAllAsRead']);
 });
 
 //Test

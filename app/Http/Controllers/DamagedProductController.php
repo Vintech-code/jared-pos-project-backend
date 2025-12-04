@@ -17,6 +17,7 @@ class DamagedProductController extends Controller
             'product_name' => 'required|string|max:255',
             'quantity' => 'required|integer|min:1',
             'reason' => 'required|string|max:255',
+            'action_taken' => 'nullable|string|max:255',
             'date' => 'required|date',
             'unit_of_measurement' => 'required|string|max:50',
         ]);
@@ -54,6 +55,46 @@ class DamagedProductController extends Controller
     {
         $damagedProducts = DamagedProduct::orderBy('created_at', 'desc')->get();
         return response()->json($damagedProducts);
+    }
+
+    public function show($id)
+    {
+        $damagedProduct = DamagedProduct::findOrFail($id);
+        return response()->json($damagedProduct);
+    }
+
+    public function update(Request $request, $id)
+    {
+        $damagedProduct = DamagedProduct::findOrFail($id);
+
+        $validated = $request->validate([
+            'customer_name' => 'sometimes|string|max:255',
+            'product_name' => 'sometimes|string|max:255',
+            'quantity' => 'sometimes|integer|min:1',
+            'reason' => 'sometimes|string|max:255',
+            'action_taken' => 'nullable|string|max:255',
+            'date' => 'sometimes|date',
+            'unit_of_measurement' => 'sometimes|string|max:50',
+            'refunded' => 'sometimes|boolean',
+            'refunded_at' => 'nullable|date',
+        ]);
+
+        $damagedProduct->update($validated);
+
+        return response()->json([
+            'message' => 'Damaged product updated successfully',
+            'damagedProduct' => $damagedProduct,
+        ]);
+    }
+
+    public function destroy($id)
+    {
+        $damagedProduct = DamagedProduct::findOrFail($id);
+        $damagedProduct->delete();
+
+        return response()->json([
+            'message' => 'Damaged product deleted successfully',
+        ]);
     }
 
     /**
