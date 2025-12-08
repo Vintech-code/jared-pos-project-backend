@@ -4,6 +4,9 @@ namespace App\Http\Controllers;
 
 use App\Models\DamagedProduct;
 use App\Models\Product;
+use App\Models\ProductVariant;
+use App\Support\ProductVariantAggregator;
+use Exception;
 use Illuminate\Http\Request;
 use App\Models\Notification;
 use Illuminate\Support\Facades\DB;
@@ -19,8 +22,14 @@ class DamagedProductController extends Controller
             'reason' => 'required|string|max:255',
             'action_taken' => 'nullable|string|max:255',
             'date' => 'required|date',
+            'logged_at' => 'nullable|date',
             'unit_of_measurement' => 'required|string|max:50',
+            'variant_id' => 'nullable|integer',
         ]);
+
+        if (empty($validated['logged_at'])) {
+            $validated['logged_at'] = now();
+        }
 
         $damagedProduct = DamagedProduct::create($validated);
 
@@ -74,9 +83,11 @@ class DamagedProductController extends Controller
             'reason' => 'sometimes|string|max:255',
             'action_taken' => 'nullable|string|max:255',
             'date' => 'sometimes|date',
+            'logged_at' => 'nullable|date',
             'unit_of_measurement' => 'sometimes|string|max:50',
             'refunded' => 'sometimes|boolean',
             'refunded_at' => 'nullable|date',
+            'variant_id' => 'nullable|integer',
         ]);
 
         $damagedProduct->update($validated);
@@ -146,50 +157,103 @@ class DamagedProductController extends Controller
         $validated = $request->validate([
             'product_name' => 'required|string',
             'quantity' => 'required|integer|min:1',
+            'variant_id' => 'nullable|integer|exists:product_variants,id',
         ]);
 
         try {
             DB::beginTransaction();
 
-            // Find the product in inventory by name
-            $product = Product::where('name', $validated['product_name'])->first();
+            $product = null;
 
-            if (!$product) {
-                DB::rollBack();
-                return response()->json([
-                    'message' => 'Product not found in inventory'
-                ], 404);
+            // When variant_id is present, always deduct from that exact variant
+            if (!empty($validated['variant_id'])) {
+                $variant = ProductVariant::with('product')->find($validated['variant_id']);
+
+                if (!$variant || !$variant->product) {
+                    DB::rollBack();
+                    return response()->json([
+                        'message' => 'Variant not found for the provided product.'
+                    ], 404);
+                }
+
+                if ($variant->quantity < $validated['quantity']) {
+                    DB::rollBack();
+                    return response()->json([
+                        'message' => 'Insufficient quantity in the selected variant',
+                        'available' => $variant->quantity,
+                        'requested' => $validated['quantity'],
+                    ], 400);
+                }
+
+                $variant->quantity -= $validated['quantity'];
+                $variant->save();
+
+                $product = $variant->product;
+                ProductVariantAggregator::refresh($product);
+            } else {
+                // Fallback: deduct from base product quantity (non-variant products)
+                $product = Product::where('name', $validated['product_name'])->first();
+
+                if (!$product) {
+                    DB::rollBack();
+                    return response()->json([
+                        'message' => 'Product not found in inventory'
+                    ], 404);
+                }
+
+                // If the product has variants but no variant_id was supplied, deduct from the default variant
+                if ($product->variants()->exists()) {
+                    $defaultVariant = $product->variants()->where('is_default', true)->first() ?? $product->variants()->first();
+
+                    if (!$defaultVariant) {
+                        DB::rollBack();
+                        return response()->json([
+                            'message' => 'No available variants to deduct from.'
+                        ], 404);
+                    }
+
+                    if ($defaultVariant->quantity < $validated['quantity']) {
+                        DB::rollBack();
+                        return response()->json([
+                            'message' => 'Insufficient quantity in the default variant',
+                            'available' => $defaultVariant->quantity,
+                            'requested' => $validated['quantity'],
+                        ], 400);
+                    }
+
+                    $defaultVariant->quantity -= $validated['quantity'];
+                    $defaultVariant->save();
+
+                    ProductVariantAggregator::refresh($product->fresh());
+                } else {
+                    if ($product->quantity < $validated['quantity']) {
+                        DB::rollBack();
+                        return response()->json([
+                            'message' => 'Insufficient quantity in inventory',
+                            'available' => $product->quantity,
+                            'requested' => $validated['quantity']
+                        ], 400);
+                    }
+
+                    $product->quantity -= $validated['quantity'];
+                    $product->save();
+                }
             }
 
-            // Check if enough quantity available
-            if ($product->quantity < $validated['quantity']) {
-                DB::rollBack();
-                return response()->json([
-                    'message' => 'Insufficient quantity in inventory',
-                    'available' => $product->quantity,
-                    'requested' => $validated['quantity']
-                ], 400);
-            }
-
-            // Deduct quantity
-            $product->quantity -= $validated['quantity'];
-            $product->save();
-
-            // Create notification
             Notification::create([
                 'type' => 'inventory_deducted',
-                'message' => "Deducted {$validated['quantity']} units of {$product->name} from inventory due to damage refund",
+                'message' => "Deducted {$validated['quantity']} units of {$validated['product_name']} from inventory due to damage",
                 'read' => false,
-                'product_id' => $product->id,
+                'product_id' => $product?->id,
             ]);
 
             DB::commit();
 
             return response()->json([
                 'message' => 'Inventory updated successfully',
-                'product' => $product
+                'product' => $product?->fresh('variants'),
             ]);
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             DB::rollBack();
             return response()->json([
                 'message' => 'Failed to update inventory',

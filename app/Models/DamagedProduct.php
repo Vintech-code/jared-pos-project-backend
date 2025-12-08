@@ -16,14 +16,17 @@ class DamagedProduct extends Model
         'reason',
         'action_taken',
         'date',
+        'logged_at',
         'unit_of_measurement',
         'refunded',
         'refunded_at',
+        'variant_id',
     ];
 
     protected $casts = [
         'refunded' => 'boolean',
         'refunded_at' => 'datetime',
         'date' => 'date',
+        'logged_at' => 'datetime',
     ];
 }
