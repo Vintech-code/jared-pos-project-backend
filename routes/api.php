@@ -57,6 +57,7 @@ Route::post('/inventory/deduct-from-damage', [DamagedProductController::class, '
 Route::prefix('customers')->group(function () {
     Route::get('/', [CustomerController::class, 'index']);
     Route::post('/', [CustomerController::class, 'store']);
+    Route::post('/purchase', [CustomerController::class, 'purchase']);
     Route::put('/{id}', [CustomerController::class, 'update']);
     Route::get('/{id}', [CustomerController::class, 'show']);
 });
