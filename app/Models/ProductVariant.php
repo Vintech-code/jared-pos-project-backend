@@ -13,6 +13,7 @@ class ProductVariant extends Model
         'product_id',
         'sku',
         'unit_label',
+        'cost_price',
         'unit_price',
         'quantity',
         'conversion_factor',
@@ -22,6 +23,7 @@ class ProductVariant extends Model
     ];
 
     protected $casts = [
+        'cost_price' => 'decimal:2',
         'unit_price' => 'decimal:2',
         'conversion_factor' => 'float',
         'is_default' => 'boolean',

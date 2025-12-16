@@ -13,6 +13,76 @@ use Illuminate\Support\Facades\DB;
 
 class DamagedProductController extends Controller
 {
+    private function applyInventoryDeltaForDamaged(string $productName, int $delta, ?int $variantId = null)
+    {
+        if ($delta === 0) {
+            return;
+        }
+
+        // When variant_id is present, always adjust that exact variant
+        if (!empty($variantId)) {
+            $variant = ProductVariant::with('product')->find($variantId);
+
+            if (!$variant || !$variant->product) {
+                throw new Exception('Variant not found for the provided product.');
+            }
+
+            if ($delta > 0) {
+                if ($variant->quantity < $delta) {
+                    throw new Exception('Insufficient quantity in the selected variant');
+                }
+                $variant->quantity -= $delta;
+            } else {
+                $variant->quantity += abs($delta);
+            }
+
+            $variant->save();
+
+            ProductVariantAggregator::refresh($variant->product);
+            return;
+        }
+
+        // Fallback: adjust base product quantity (non-variant products)
+        $product = Product::where('name', $productName)->first();
+
+        if (!$product) {
+            throw new Exception('Product not found in inventory');
+        }
+
+        // If the product has variants but no variant_id was supplied, adjust the default variant
+        if ($product->variants()->exists()) {
+            $defaultVariant = $product->variants()->where('is_default', true)->first() ?? $product->variants()->first();
+
+            if (!$defaultVariant) {
+                throw new Exception('No available variants to adjust.');
+            }
+
+            if ($delta > 0) {
+                if ($defaultVariant->quantity < $delta) {
+                    throw new Exception('Insufficient quantity in the default variant');
+                }
+                $defaultVariant->quantity -= $delta;
+            } else {
+                $defaultVariant->quantity += abs($delta);
+            }
+
+            $defaultVariant->save();
+            ProductVariantAggregator::refresh($product->fresh());
+            return;
+        }
+
+        if ($delta > 0) {
+            if ($product->quantity < $delta) {
+                throw new Exception('Insufficient quantity in inventory');
+            }
+            $product->quantity -= $delta;
+        } else {
+            $product->quantity += abs($delta);
+        }
+
+        $product->save();
+    }
+
     public function store(Request $request)
     {
         $validated = $request->validate([
@@ -76,6 +146,10 @@ class DamagedProductController extends Controller
     {
         $damagedProduct = DamagedProduct::findOrFail($id);
 
+        $originalQuantity = (int) $damagedProduct->quantity;
+        $originalProductName = (string) $damagedProduct->product_name;
+        $originalVariantId = $damagedProduct->variant_id ? (int) $damagedProduct->variant_id : null;
+
         $validated = $request->validate([
             'customer_name' => 'sometimes|string|max:255',
             'product_name' => 'sometimes|string|max:255',
@@ -90,22 +164,76 @@ class DamagedProductController extends Controller
             'variant_id' => 'nullable|integer',
         ]);
 
-        $damagedProduct->update($validated);
+        $nextQuantity = array_key_exists('quantity', $validated) ? (int) $validated['quantity'] : $originalQuantity;
+        $nextProductName = array_key_exists('product_name', $validated) ? (string) $validated['product_name'] : $originalProductName;
+        $nextVariantId = array_key_exists('variant_id', $validated)
+            ? (!empty($validated['variant_id']) ? (int) $validated['variant_id'] : null)
+            : $originalVariantId;
 
-        return response()->json([
-            'message' => 'Damaged product updated successfully',
-            'damagedProduct' => $damagedProduct,
-        ]);
+        // Prevent quantity adjustments once refunded to avoid double inventory inconsistencies.
+        if ($damagedProduct->refunded && array_key_exists('quantity', $validated) && $nextQuantity !== $originalQuantity) {
+            return response()->json([
+                'message' => 'Cannot change quantity of a refunded damaged record.',
+            ], 400);
+        }
+
+        try {
+            DB::beginTransaction();
+
+            // If product/variant identity changes, move stock from old to new.
+            if ($nextProductName !== $originalProductName || $nextVariantId !== $originalVariantId) {
+                $this->applyInventoryDeltaForDamaged($originalProductName, -$originalQuantity, $originalVariantId);
+                $this->applyInventoryDeltaForDamaged($nextProductName, $nextQuantity, $nextVariantId);
+            } else {
+                $delta = $nextQuantity - $originalQuantity;
+                $this->applyInventoryDeltaForDamaged($originalProductName, $delta, $originalVariantId);
+            }
+
+            $damagedProduct->update($validated);
+            DB::commit();
+
+            return response()->json([
+                'message' => 'Damaged product updated successfully',
+                'damagedProduct' => $damagedProduct,
+            ]);
+        } catch (Exception $e) {
+            DB::rollBack();
+
+            return response()->json([
+                'message' => 'Failed to update damaged product',
+                'error' => $e->getMessage(),
+            ], 400);
+        }
     }
 
     public function destroy($id)
     {
         $damagedProduct = DamagedProduct::findOrFail($id);
-        $damagedProduct->delete();
 
-        return response()->json([
-            'message' => 'Damaged product deleted successfully',
-        ]);
+        try {
+            DB::beginTransaction();
+
+            $productName = (string) $damagedProduct->product_name;
+            $qty = (int) $damagedProduct->quantity;
+            $variantId = $damagedProduct->variant_id ? (int) $damagedProduct->variant_id : null;
+
+            // Restore inventory on delete (undo original deduction)
+            $this->applyInventoryDeltaForDamaged($productName, -$qty, $variantId);
+
+            $damagedProduct->delete();
+            DB::commit();
+
+            return response()->json([
+                'message' => 'Damaged product deleted successfully',
+            ]);
+        } catch (Exception $e) {
+            DB::rollBack();
+
+            return response()->json([
+                'message' => 'Failed to delete damaged product',
+                'error' => $e->getMessage(),
+            ], 400);
+        }
     }
 
     /**

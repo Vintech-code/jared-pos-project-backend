@@ -15,6 +15,7 @@ class ProductVariantController extends Controller
         $validated = $request->validate([
             'sku' => ['nullable', 'string', 'max:100', Rule::unique('product_variants', 'sku')],
             'unit_label' => 'required|string|max:100',
+            'cost_price' => 'required|numeric|min:0',
             'unit_price' => 'required|numeric|min:0',
             'quantity' => 'required|integer|min:0',
             'conversion_factor' => 'nullable|numeric|min:0.0001',
@@ -29,6 +30,7 @@ class ProductVariantController extends Controller
         $variant = $product->variants()->create([
             'sku' => $validated['sku'] ?? null,
             'unit_label' => $validated['unit_label'],
+            'cost_price' => $validated['cost_price'],
             'unit_price' => $validated['unit_price'],
             'quantity' => $validated['quantity'],
             'conversion_factor' => $validated['conversion_factor'] ?? 1,
@@ -52,6 +54,7 @@ class ProductVariantController extends Controller
         $validated = $request->validate([
             'sku' => ['nullable', 'string', 'max:100', Rule::unique('product_variants', 'sku')->ignore($variant->id)],
             'unit_label' => 'sometimes|string|max:100',
+            'cost_price' => 'sometimes|numeric|min:0',
             'unit_price' => 'sometimes|numeric|min:0',
             'quantity' => 'sometimes|integer|min:0',
             'conversion_factor' => 'nullable|numeric|min:0.0001',

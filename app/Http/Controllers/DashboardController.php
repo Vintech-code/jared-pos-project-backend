@@ -19,34 +19,34 @@ class DashboardController extends Controller
             $monthEnd = Carbon::now()->endOfMonth();
             $lastMonthStart = Carbon::now()->subMonth()->startOfMonth();
             $lastMonthEnd = Carbon::now()->subMonth()->endOfMonth();
-            
+
             // ===== SALES METRICS =====
             $salesMetrics = $this->calculateSalesMetrics($today, $yesterday, $monthStart, $monthEnd, $lastMonthStart, $lastMonthEnd);
-            
+
             // ===== INVENTORY METRICS =====
             $inventoryMetrics = $this->calculateInventoryMetrics();
-            
+
             // ===== CUSTOMER METRICS =====
             $customerMetrics = $this->calculateCustomerMetrics($today, $monthStart, $monthEnd);
-            
+
             // ===== DAMAGED PRODUCTS =====
             $damagedMetrics = $this->calculateDamagedMetrics($monthStart, $monthEnd);
-            
+
             // ===== RECENT TRANSACTIONS =====
             $recentTransactions = $this->getRecentTransactions();
-            
+
             // ===== TOP SELLING PRODUCTS =====
             $topProducts = $this->getTopSellingProducts();
-            
+
             // ===== LOW STOCK ALERTS =====
             $lowStockAlerts = $this->getLowStockAlerts();
-            
+
             // ===== SALES OVERVIEW (Last 7 days) =====
             $salesChartData = $this->getSalesChartData();
-            
+
             // ===== CATEGORY DISTRIBUTION =====
             $categoryDistribution = $this->getCategoryDistribution();
-            
+
             return response()->json([
                 'success' => true,
                 'data' => [
@@ -62,7 +62,7 @@ class DashboardController extends Controller
                 ],
                 'timestamp' => now()->toDateTimeString()
             ]);
-            
+
         } catch (\Exception $e) {
             \Log::error('Dashboard Error: ' . $e->getMessage());
             return response()->json([
@@ -72,67 +72,88 @@ class DashboardController extends Controller
             ], 500);
         }
     }
-    
+
     /**
      * Calculate sales metrics
      */
     private function calculateSalesMetrics($today, $yesterday, $monthStart, $monthEnd, $lastMonthStart, $lastMonthEnd)
     {
-        // Get all customers with their products
-        $customers = DB::table('customers')->get();
-        $products = DB::table('products')->get()->keyBy('name');
-        
+        // customer_products holds the purchased items; prices come from products/variants
+        $items = DB::table('customer_products as cp')
+            ->join('customers as c', 'c.id', '=', 'cp.customer_id')
+            ->leftJoin('products as p', 'p.name', '=', 'cp.product_name')
+            ->leftJoin('product_variants as pv', function ($join) {
+                $join->on('pv.product_id', '=', 'p.id')
+                    ->on('pv.unit_label', '=', 'cp.unit');
+            })
+            ->select([
+                'cp.quantity',
+                'cp.purchase_date as item_purchase_date',
+                'c.purchase_date as customer_purchase_date',
+                'p.unit_price as base_unit_price',
+                'p.cost_price as base_cost_price',
+                'pv.unit_price as variant_unit_price',
+                'pv.cost_price as variant_cost_price',
+            ])
+            ->get();
+
         $todaySales = 0;
         $yesterdaySales = 0;
         $monthSales = 0;
         $lastMonthSales = 0;
         $totalSales = 0;
+        $todayProfit = 0;
+        $monthProfit = 0;
+        $totalProfit = 0;
         $todayOrders = 0;
         $monthOrders = 0;
-        
-        foreach ($customers as $customer) {
-            $purchaseDate = Carbon::parse($customer->purchase_date);
-            $customerProducts = json_decode($customer->products, true) ?? [];
-            
-            foreach ($customerProducts as $product) {
-                $productName = $product['product_name'] ?? '';
-                $quantity = floatval($product['quantity'] ?? 0);
-                $productData = $products->get($productName);
-                $unitPrice = $productData ? floatval($productData->unit_price) : 0;
-                $revenue = $quantity * $unitPrice;
-                
-                $totalSales += $revenue;
-                
-                if ($purchaseDate->isSameDay($today)) {
-                    $todaySales += $revenue;
-                    $todayOrders++;
-                }
-                
-                if ($purchaseDate->isSameDay($yesterday)) {
-                    $yesterdaySales += $revenue;
-                }
-                
-                if ($purchaseDate->between($monthStart, $monthEnd)) {
-                    $monthSales += $revenue;
-                    $monthOrders++;
-                }
-                
-                if ($purchaseDate->between($lastMonthStart, $lastMonthEnd)) {
-                    $lastMonthSales += $revenue;
-                }
+
+        foreach ($items as $item) {
+            $purchaseDate = Carbon::parse($item->item_purchase_date ?? $item->customer_purchase_date);
+            $quantity = floatval($item->quantity ?? 0);
+
+            $sell = floatval($item->variant_unit_price ?? $item->base_unit_price ?? 0);
+            $cost = floatval($item->variant_cost_price ?? $item->base_cost_price ?? 0);
+            $revenue = $quantity * $sell;
+            $profit = $quantity * ($sell - $cost);
+
+            $totalSales += $revenue;
+            $totalProfit += $profit;
+
+            if ($purchaseDate->isSameDay($today)) {
+                $todaySales += $revenue;
+                $todayProfit += $profit;
+                $todayOrders++;
+            }
+
+            if ($purchaseDate->isSameDay($yesterday)) {
+                $yesterdaySales += $revenue;
+            }
+
+            if ($purchaseDate->between($monthStart, $monthEnd)) {
+                $monthSales += $revenue;
+                $monthProfit += $profit;
+                $monthOrders++;
+            }
+
+            if ($purchaseDate->between($lastMonthStart, $lastMonthEnd)) {
+                $lastMonthSales += $revenue;
             }
         }
-        
+
         // Calculate trends
         $dailyTrend = $this->calculateTrend($todaySales, $yesterdaySales);
         $monthlyTrend = $this->calculateTrend($monthSales, $lastMonthSales);
-        
+
         return [
             'total_sales' => round($totalSales, 2),
             'today_sales' => round($todaySales, 2),
             'yesterday_sales' => round($yesterdaySales, 2),
             'month_sales' => round($monthSales, 2),
             'last_month_sales' => round($lastMonthSales, 2),
+            'total_profit' => round($totalProfit, 2),
+            'today_profit' => round($todayProfit, 2),
+            'month_profit' => round($monthProfit, 2),
             'today_orders' => $todayOrders,
             'month_orders' => $monthOrders,
             'daily_trend' => $dailyTrend,
@@ -140,14 +161,14 @@ class DashboardController extends Controller
             'average_order_value' => $todayOrders > 0 ? round($todaySales / $todayOrders, 2) : 0,
         ];
     }
-    
+
     /**
      * Calculate inventory metrics
      */
     private function calculateInventoryMetrics()
     {
         $products = DB::table('products')->get();
-        
+
         $totalItems = 0;
         $totalValue = 0;
         $inStock = 0;
@@ -155,14 +176,14 @@ class DashboardController extends Controller
         $criticalStock = 0;
         $outOfStock = 0;
         $categories = [];
-        
+
         foreach ($products as $product) {
             $quantity = intval($product->quantity);
             $unitPrice = floatval($product->unit_price);
-            
+
             $totalItems += $quantity;
             $totalValue += $quantity * $unitPrice;
-            
+
             if ($quantity >= 50) {
                 $inStock++;
             } elseif ($quantity > 10) {
@@ -172,16 +193,16 @@ class DashboardController extends Controller
             } else {
                 $outOfStock++;
             }
-            
+
             if ($product->category) {
                 $categories[$product->category] = ($categories[$product->category] ?? 0) + 1;
             }
         }
-        
+
         $totalProducts = $products->count();
         $totalCategories = count($categories);
         $stockHealth = $totalProducts > 0 ? round(($inStock / $totalProducts) * 100, 1) : 0;
-        
+
         return [
             'total_products' => $totalProducts,
             'total_items' => $totalItems,
@@ -195,7 +216,7 @@ class DashboardController extends Controller
             'alerts_count' => $lowStock + $criticalStock + $outOfStock,
         ];
     }
-    
+
     /**
      * Calculate customer metrics
      */
@@ -208,14 +229,14 @@ class DashboardController extends Controller
         $monthCustomers = DB::table('customers')
             ->whereBetween('purchase_date', [$monthStart, $monthEnd])
             ->count();
-            
+
         return [
             'total_customers' => $totalCustomers,
             'today_customers' => $todayCustomers,
             'month_customers' => $monthCustomers,
         ];
     }
-    
+
     /**
      * Calculate damaged products metrics
      */
@@ -223,28 +244,28 @@ class DashboardController extends Controller
     {
         $damagedProducts = DB::table('damaged_products')->get();
         $products = DB::table('products')->get()->keyBy('name');
-        
+
         $totalDamaged = 0;
         $totalLoss = 0;
         $monthDamaged = 0;
         $monthLoss = 0;
-        
+
         foreach ($damagedProducts as $damaged) {
             $quantity = intval($damaged->quantity);
             $productData = $products->get($damaged->product_name);
             $unitPrice = $productData ? floatval($productData->unit_price) : 0;
             $loss = $quantity * $unitPrice;
-            
+
             $totalDamaged += $quantity;
             $totalLoss += $loss;
-            
+
             $damageDate = Carbon::parse($damaged->date ?? $damaged->created_at);
             if ($damageDate->between($monthStart, $monthEnd)) {
                 $monthDamaged += $quantity;
                 $monthLoss += $loss;
             }
         }
-        
+
         return [
             'total_damaged' => $totalDamaged,
             'total_loss' => round($totalLoss, 2),
@@ -253,7 +274,7 @@ class DashboardController extends Controller
             'total_reports' => $damagedProducts->count(),
         ];
     }
-    
+
     /**
      * Get recent transactions (last 10)
      */
@@ -263,93 +284,73 @@ class DashboardController extends Controller
             ->orderBy('purchase_date', 'desc')
             ->limit(10)
             ->get();
-        $products = DB::table('products')->get()->keyBy('name');
-        
+
+        if ($customers->isEmpty()) {
+            return [];
+        }
+
+        $customerIds = $customers->pluck('id')->all();
+
+        $totals = DB::table('customer_products as cp')
+            ->leftJoin('products as p', 'p.name', '=', 'cp.product_name')
+            ->leftJoin('product_variants as pv', function ($join) {
+                $join->on('pv.product_id', '=', 'p.id')
+                    ->on('pv.unit_label', '=', 'cp.unit');
+            })
+            ->whereIn('cp.customer_id', $customerIds)
+            ->groupBy('cp.customer_id')
+            ->selectRaw('cp.customer_id as customer_id, SUM(cp.quantity * COALESCE(pv.unit_price, p.unit_price, 0)) as total_amount, COUNT(*) as items_count')
+            ->get()
+            ->keyBy('customer_id');
+
         $transactions = [];
         foreach ($customers as $customer) {
-            $customerProducts = json_decode($customer->products, true) ?? [];
-            $totalAmount = 0;
-            $itemCount = 0;
-            
-            foreach ($customerProducts as $product) {
-                $productName = $product['product_name'] ?? '';
-                $quantity = floatval($product['quantity'] ?? 0);
-                $productData = $products->get($productName);
-                $unitPrice = $productData ? floatval($productData->unit_price) : 0;
-                $totalAmount += $quantity * $unitPrice;
-                $itemCount++;
-            }
-            
+            $row = $totals->get($customer->id);
             $transactions[] = [
                 'id' => $customer->id,
                 'customer_name' => $customer->name,
                 'customer_phone' => $customer->phone ?? '',
-                'total_amount' => round($totalAmount, 2),
-                'items_count' => $itemCount,
+                'total_amount' => round(floatval($row->total_amount ?? 0), 2),
+                'items_count' => intval($row->items_count ?? 0),
                 'purchase_date' => $customer->purchase_date,
                 'time_ago' => Carbon::parse($customer->purchase_date)->diffForHumans(),
             ];
         }
-        
+
         return $transactions;
     }
-    
+
     /**
      * Get top 5 selling products
      */
     private function getTopSellingProducts()
     {
-        $customers = DB::table('customers')->get();
-        $productsData = DB::table('products')->get()->keyBy('name');
-        $productSales = [];
-        
-        foreach ($customers as $customer) {
-            $customerProducts = json_decode($customer->products, true) ?? [];
-            
-            foreach ($customerProducts as $product) {
-                $productName = $product['product_name'] ?? '';
-                $quantity = floatval($product['quantity'] ?? 0);
-                
-                if (!isset($productSales[$productName])) {
-                    $productSales[$productName] = [
-                        'quantity' => 0,
-                        'revenue' => 0,
-                        'orders' => 0,
-                    ];
-                }
-                
-                $productData = $productsData->get($productName);
-                $unitPrice = $productData ? floatval($productData->unit_price) : 0;
-                
-                $productSales[$productName]['quantity'] += $quantity;
-                $productSales[$productName]['revenue'] += $quantity * $unitPrice;
-                $productSales[$productName]['orders']++;
-            }
-        }
-        
-        // Sort by revenue and get top 5
-        uasort($productSales, function($a, $b) {
-            return $b['revenue'] <=> $a['revenue'];
-        });
-        
-        $topProducts = [];
+        $rows = DB::table('customer_products as cp')
+            ->leftJoin('products as p', 'p.name', '=', 'cp.product_name')
+            ->leftJoin('product_variants as pv', function ($join) {
+                $join->on('pv.product_id', '=', 'p.id')
+                    ->on('pv.unit_label', '=', 'cp.unit');
+            })
+            ->groupBy('cp.product_name', 'p.category', 'p.quantity')
+            ->selectRaw('cp.product_name as name, SUM(cp.quantity) as quantity_sold, SUM(cp.quantity * COALESCE(pv.unit_price, p.unit_price, 0)) as revenue, COUNT(*) as orders, MAX(p.category) as category, MAX(p.quantity) as current_stock')
+            ->orderByDesc('revenue')
+            ->limit(5)
+            ->get();
+
         $rank = 1;
-        foreach (array_slice($productSales, 0, 5, true) as $productName => $sales) {
-            $productData = $productsData->get($productName);
-            $topProducts[] = [
+        return $rows->map(function ($row) use (&$rank) {
+            return [
                 'rank' => $rank++,
-                'name' => $productName,
-                'quantity_sold' => $sales['quantity'],
-                'revenue' => round($sales['revenue'], 2),
-                'orders' => $sales['orders'],
-                'category' => $productData->category ?? 'General',
-                'current_stock' => $productData ? intval($productData->quantity) : 0,
+                'name' => $row->name,
+                'quantity_sold' => floatval($row->quantity_sold ?? 0),
+                'revenue' => round(floatval($row->revenue ?? 0), 2),
+                'orders' => intval($row->orders ?? 0),
+                'category' => $row->category ?? 'General',
+                'current_stock' => intval($row->current_stock ?? 0),
             ];
-        }
-        
-        return $topProducts;
+        })->all();
     }
-    
+
     /**
      * Get low stock alerts
      */
@@ -360,12 +361,12 @@ class DashboardController extends Controller
             ->orderBy('quantity', 'asc')
             ->limit(10)
             ->get();
-        
+
         $alerts = [];
         foreach ($products as $product) {
             $quantity = intval($product->quantity);
             $severity = 'low';
-            
+
             if ($quantity === 0) {
                 $severity = 'out_of_stock';
             } elseif ($quantity <= 5) {
@@ -373,7 +374,7 @@ class DashboardController extends Controller
             } else {
                 $severity = 'low';
             }
-            
+
             $alerts[] = [
                 'id' => $product->id,
                 'name' => $product->name,
@@ -383,55 +384,52 @@ class DashboardController extends Controller
                 'severity' => $severity,
             ];
         }
-        
+
         return $alerts;
     }
-    
+
     /**
      * Get sales overview data (last 7 days)
      */
     private function getSalesChartData()
     {
-        $customers = DB::table('customers')->get();
-        $products = DB::table('products')->get()->keyBy('name');
+        $start = Carbon::today()->subDays(6)->startOfDay();
+        $end = Carbon::today()->endOfDay();
+
+        $rows = DB::table('customer_products as cp')
+            ->join('customers as c', 'c.id', '=', 'cp.customer_id')
+            ->leftJoin('products as p', 'p.name', '=', 'cp.product_name')
+            ->leftJoin('product_variants as pv', function ($join) {
+                $join->on('pv.product_id', '=', 'p.id')
+                    ->on('pv.unit_label', '=', 'cp.unit');
+            })
+            ->whereBetween(DB::raw('COALESCE(cp.purchase_date, c.purchase_date)'), [$start, $end])
+            ->groupBy(DB::raw('DATE(COALESCE(cp.purchase_date, c.purchase_date))'))
+            ->selectRaw(
+                'DATE(COALESCE(cp.purchase_date, c.purchase_date)) as sale_date, ' .
+                'SUM(cp.quantity * COALESCE(pv.unit_price, p.unit_price, 0)) as sales, ' .
+                'COUNT(*) as orders'
+            )
+            ->get()
+            ->keyBy('sale_date');
+
         $chartData = [];
-        
         for ($i = 6; $i >= 0; $i--) {
             $date = Carbon::today()->subDays($i);
             $dateStr = $date->format('Y-m-d');
-            
-            $daySales = 0;
-            $dayOrders = 0;
-            
-            foreach ($customers as $customer) {
-                $purchaseDate = Carbon::parse($customer->purchase_date);
-                
-                if ($purchaseDate->isSameDay($date)) {
-                    $customerProducts = json_decode($customer->products, true) ?? [];
-                    
-                    foreach ($customerProducts as $product) {
-                        $productName = $product['product_name'] ?? '';
-                        $quantity = floatval($product['quantity'] ?? 0);
-                        $productData = $products->get($productName);
-                        $unitPrice = $productData ? floatval($productData->unit_price) : 0;
-                        $daySales += $quantity * $unitPrice;
-                    }
-                    
-                    $dayOrders++;
-                }
-            }
-            
+            $row = $rows->get($dateStr);
+
             $chartData[] = [
                 'date' => $dateStr,
                 'day' => $date->format('D'),
-                'sales' => round($daySales, 2),
-                'orders' => $dayOrders,
+                'sales' => round(floatval($row->sales ?? 0), 2),
+                'orders' => intval($row->orders ?? 0),
             ];
         }
-        
+
         return $chartData;
     }
-    
+
     /**
      * Get category distribution
      */
@@ -439,10 +437,10 @@ class DashboardController extends Controller
     {
         $products = DB::table('products')->get();
         $categories = [];
-        
+
         foreach ($products as $product) {
             $category = $product->category ?? 'Uncategorized';
-            
+
             if (!isset($categories[$category])) {
                 $categories[$category] = [
                     'count' => 0,
@@ -450,12 +448,12 @@ class DashboardController extends Controller
                     'total_value' => 0,
                 ];
             }
-            
+
             $categories[$category]['count']++;
             $categories[$category]['total_stock'] += intval($product->quantity);
             $categories[$category]['total_value'] += intval($product->quantity) * floatval($product->unit_price);
         }
-        
+
         $distribution = [];
         foreach ($categories as $categoryName => $data) {
             $distribution[] = [
@@ -465,15 +463,15 @@ class DashboardController extends Controller
                 'value' => round($data['total_value'], 2),
             ];
         }
-        
+
         // Sort by value
-        usort($distribution, function($a, $b) {
+        usort($distribution, function ($a, $b) {
             return $b['value'] <=> $a['value'];
         });
-        
+
         return $distribution;
     }
-    
+
     /**
      * Calculate percentage trend
      */
@@ -494,4 +492,3 @@ class DashboardController extends Controller
         ];
     }
 }
- 

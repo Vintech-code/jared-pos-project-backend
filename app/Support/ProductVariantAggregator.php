@@ -22,6 +22,9 @@ class ProductVariantAggregator
         if ($defaultVariant) {
             $product->unit_price = $defaultVariant->unit_price;
             $product->unit_of_measurement = $defaultVariant->unit_label;
+            if (isset($defaultVariant->cost_price)) {
+                $product->cost_price = $defaultVariant->cost_price;
+            }
             if ($defaultVariant->sku) {
                 $product->sku = $defaultVariant->sku;
             }

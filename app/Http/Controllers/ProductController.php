@@ -18,6 +18,7 @@ class ProductController extends Controller
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255', 'unique:products,name'],
             'sku' => 'nullable|string|max:100',
+            'cost_price' => 'required|numeric|min:0',
             'unit_price' => 'required|numeric|min:0.01',
             'quantity' => 'required|integer|min:0',
             'unit_of_measurement' => 'required|string|max:100',
@@ -26,6 +27,7 @@ class ProductController extends Controller
             'variants' => 'nullable|array|min:1',
             'variants.*.sku' => ['nullable', 'string', 'max:100', Rule::unique('product_variants', 'sku'), 'distinct'],
             'variants.*.unit_label' => 'required_with:variants|string|max:100',
+            'variants.*.cost_price' => 'required_with:variants|numeric|min:0',
             'variants.*.unit_price' => 'required_with:variants|numeric|min:0',
             'variants.*.quantity' => 'required_with:variants|integer|min:0',
             'variants.*.conversion_factor' => 'nullable|numeric|min:0.0001',
@@ -67,6 +69,7 @@ class ProductController extends Controller
                 [
                     'sku' => $validated['sku'] ?? null,
                     'unit_label' => $validated['unit_of_measurement'],
+                    'cost_price' => $validated['cost_price'],
                     'unit_price' => $validated['unit_price'],
                     'quantity' => $validated['quantity'],
                     'conversion_factor' => 1,
@@ -83,6 +86,7 @@ class ProductController extends Controller
                 'product_id' => $product->id,
                 'sku' => $variantData['sku'] ?? null,
                 'unit_label' => $variantData['unit_label'],
+                'cost_price' => $variantData['cost_price'] ?? $validated['cost_price'],
                 'unit_price' => $variantData['unit_price'],
                 'quantity' => $variantData['quantity'],
                 'conversion_factor' => $variantData['conversion_factor'] ?? 1,
@@ -220,6 +224,7 @@ class ProductController extends Controller
             'name' => ['required', 'string', 'max:255', Rule::unique('products', 'name')->ignore($product->id)],
             'category' => 'nullable|string|max:100',
             'sku' => ['nullable', 'string', 'max:100'],
+            'cost_price' => 'nullable|numeric|min:0',
             'image' => 'nullable|image|max:5120',
             'remove_image' => 'nullable|boolean',
             'variants' => 'nullable|string',
@@ -227,6 +232,7 @@ class ProductController extends Controller
 
         if (!$hasVariants) {
             $rules['unit_price'] = 'required|numeric|min:0';
+            $rules['cost_price'] = 'required|numeric|min:0';
             $rules['unit_of_measurement'] = 'required|string|max:100';
         }
 
@@ -249,6 +255,7 @@ class ProductController extends Controller
                     [
                         'id' => ['required', 'integer', Rule::exists('product_variants', 'id')->where(fn($query) => $query->where('product_id', $product->id))],
                         'unit_label' => 'required|string|max:100',
+                        'cost_price' => 'required|numeric|min:0',
                         'unit_price' => 'required|numeric|min:0',
                         'sku' => ['nullable', 'string', 'max:100', Rule::unique('product_variants', 'sku')->ignore($variantData['id'])],
                         'barcode' => 'nullable|string|max:255',
@@ -268,6 +275,7 @@ class ProductController extends Controller
 
         if (!$hasVariants) {
             $product->unit_price = $request->input('unit_price', $product->unit_price);
+            $product->cost_price = $request->input('cost_price', $product->cost_price);
             $product->unit_of_measurement = $request->input('unit_of_measurement', $product->unit_of_measurement);
             $product->sku = $request->filled('sku') ? $request->input('sku') : null;
         }
@@ -302,6 +310,7 @@ class ProductController extends Controller
                     }
 
                     $variant->unit_label = $variantData['unit_label'];
+                    $variant->cost_price = $variantData['cost_price'];
                     $variant->unit_price = $variantData['unit_price'];
                     $variant->sku = $variantData['sku'] ?? null;
                     $variant->barcode = $variantData['barcode'] ?? null;
@@ -324,6 +333,9 @@ class ProductController extends Controller
                 if ($baseVariant) {
                     if ($request->filled('unit_of_measurement')) {
                         $baseVariant->unit_label = $request->input('unit_of_measurement');
+                    }
+                    if ($request->filled('cost_price')) {
+                        $baseVariant->cost_price = $request->input('cost_price');
                     }
                     if ($request->filled('unit_price')) {
                         $baseVariant->unit_price = $request->input('unit_price');

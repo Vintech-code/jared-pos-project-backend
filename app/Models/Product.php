@@ -15,12 +15,19 @@ class Product extends Model
     protected $fillable = [
         'name',
         'sku',
+        'cost_price',
         'unit_price',
         'quantity',
         'unit_of_measurement',
         'category',
         'hidden',
         'image_url',
+    ];
+
+    protected $casts = [
+        'cost_price' => 'decimal:2',
+        'unit_price' => 'decimal:2',
+        'hidden' => 'boolean',
     ];
 
     public function saleItems()
