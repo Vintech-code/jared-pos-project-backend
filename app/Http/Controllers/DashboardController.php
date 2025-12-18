@@ -8,6 +8,9 @@ use Carbon\Carbon;
 
 class DashboardController extends Controller
 {
+    private const STOCK_LOW_MAX = 20;
+    private const STOCK_CRITICAL_MAX = 10;
+
     public function index()
     {
         try {
@@ -167,7 +170,18 @@ class DashboardController extends Controller
      */
     private function calculateInventoryMetrics()
     {
-        $products = DB::table('products')->get();
+        $rows = DB::table('products as p')
+            ->leftJoin('product_variants as pv', 'pv.product_id', '=', 'p.id')
+            ->select([
+                'p.id',
+                'p.category',
+                'p.quantity as product_quantity',
+                'p.unit_price',
+                'pv.quantity as variant_quantity',
+                'pv.hidden as variant_hidden',
+            ])
+            ->orderBy('p.id')
+            ->get();
 
         $totalItems = 0;
         $totalValue = 0;
@@ -177,29 +191,54 @@ class DashboardController extends Controller
         $outOfStock = 0;
         $categories = [];
 
-        foreach ($products as $product) {
-            $quantity = intval($product->quantity);
-            $unitPrice = floatval($product->unit_price);
-
-            $totalItems += $quantity;
-            $totalValue += $quantity * $unitPrice;
-
-            if ($quantity >= 50) {
-                $inStock++;
-            } elseif ($quantity > 10) {
-                $lowStock++;
-            } elseif ($quantity > 0) {
-                $criticalStock++;
-            } else {
-                $outOfStock++;
+        $byProduct = [];
+        foreach ($rows as $row) {
+            if (!isset($byProduct[$row->id])) {
+                $byProduct[$row->id] = [
+                    'id' => $row->id,
+                    'category' => $row->category,
+                    'product_quantity' => intval($row->product_quantity ?? 0),
+                    'unit_price' => floatval($row->unit_price ?? 0),
+                    'min_variant_qty' => null,
+                ];
             }
 
-            if ($product->category) {
-                $categories[$product->category] = ($categories[$product->category] ?? 0) + 1;
+            // track the minimum visible variant quantity for alerting
+            $variantHidden = filter_var($row->variant_hidden, FILTER_VALIDATE_BOOLEAN);
+            if ($row->variant_quantity !== null && !$variantHidden) {
+                $vQty = intval($row->variant_quantity);
+                $currentMin = $byProduct[$row->id]['min_variant_qty'];
+                if ($currentMin === null || $vQty < $currentMin) {
+                    $byProduct[$row->id]['min_variant_qty'] = $vQty;
+                }
             }
         }
 
-        $totalProducts = $products->count();
+        foreach ($byProduct as $product) {
+            $quantity = intval($product['product_quantity']);
+            $unitPrice = floatval($product['unit_price']);
+            $totalItems += $quantity;
+            $totalValue += $quantity * $unitPrice;
+
+            $alertQty = $product['min_variant_qty'] !== null ? intval($product['min_variant_qty']) : $quantity;
+
+            if ($alertQty <= 0) {
+                $outOfStock++;
+            } elseif ($alertQty <= self::STOCK_CRITICAL_MAX) {
+                $criticalStock++;
+            } elseif ($alertQty <= self::STOCK_LOW_MAX) {
+                $lowStock++;
+            } else {
+                $inStock++;
+            }
+
+            $category = $product['category'];
+            if ($category) {
+                $categories[$category] = ($categories[$category] ?? 0) + 1;
+            }
+        }
+
+        $totalProducts = count($byProduct);
         $totalCategories = count($categories);
         $stockHealth = $totalProducts > 0 ? round(($inStock / $totalProducts) * 100, 1) : 0;
 
@@ -356,36 +395,77 @@ class DashboardController extends Controller
      */
     private function getLowStockAlerts()
     {
-        $products = DB::table('products')
-            ->where('quantity', '<=', 10)
-            ->orderBy('quantity', 'asc')
-            ->limit(10)
+        $rows = DB::table('products as p')
+            ->leftJoin('product_variants as pv', 'pv.product_id', '=', 'p.id')
+            ->select([
+                'p.id',
+                'p.name',
+                'p.category',
+                'p.unit_of_measurement',
+                'p.quantity as product_quantity',
+                'pv.unit_label',
+                'pv.quantity as variant_quantity',
+                'pv.hidden as variant_hidden',
+            ])
+            ->orderBy('p.id')
             ->get();
 
-        $alerts = [];
-        foreach ($products as $product) {
-            $quantity = intval($product->quantity);
-            $severity = 'low';
+        $alertsByProduct = [];
+        foreach ($rows as $row) {
+            $id = $row->id;
+            if (!isset($alertsByProduct[$id])) {
+                $alertsByProduct[$id] = [
+                    'id' => $row->id,
+                    'name' => $row->name,
+                    'category' => $row->category ?? 'General',
+                    'base_unit' => $row->unit_of_measurement ?? 'pcs',
+                    'fallback_quantity' => intval($row->product_quantity ?? 0),
+                    'min_qty' => null,
+                    'min_unit' => null,
+                ];
+            }
 
-            if ($quantity === 0) {
+            $variantHidden = filter_var($row->variant_hidden, FILTER_VALIDATE_BOOLEAN);
+            if ($row->variant_quantity !== null && !$variantHidden) {
+                $vQty = intval($row->variant_quantity);
+                $currentMin = $alertsByProduct[$id]['min_qty'];
+                if ($currentMin === null || $vQty < $currentMin) {
+                    $alertsByProduct[$id]['min_qty'] = $vQty;
+                    $alertsByProduct[$id]['min_unit'] = $row->unit_label;
+                }
+            }
+        }
+
+        $alerts = [];
+        foreach ($alertsByProduct as $p) {
+            $quantity = $p['min_qty'] !== null ? intval($p['min_qty']) : intval($p['fallback_quantity']);
+            if ($quantity > self::STOCK_LOW_MAX) {
+                continue;
+            }
+
+            if ($quantity <= 0) {
                 $severity = 'out_of_stock';
-            } elseif ($quantity <= 5) {
+            } elseif ($quantity <= self::STOCK_CRITICAL_MAX) {
                 $severity = 'critical';
             } else {
                 $severity = 'low';
             }
 
             $alerts[] = [
-                'id' => $product->id,
-                'name' => $product->name,
+                'id' => $p['id'],
+                'name' => $p['name'],
                 'quantity' => $quantity,
-                'category' => $product->category ?? 'General',
-                'unit' => $product->unit_of_measurement ?? 'pcs',
+                'category' => $p['category'],
+                'unit' => $p['min_unit'] ?: $p['base_unit'],
                 'severity' => $severity,
             ];
         }
 
-        return $alerts;
+        usort($alerts, function ($a, $b) {
+            return ($a['quantity'] <=> $b['quantity']);
+        });
+
+        return array_slice($alerts, 0, 10);
     }
 
     /**
